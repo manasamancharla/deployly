@@ -5,6 +5,8 @@ import random
 import string
 import os
 from dotenv import load_dotenv
+import asyncpg, os, random, string
+from datetime import datetime
 
 load_dotenv()
 
@@ -38,6 +40,14 @@ ecs_client = boto3.client(
     aws_secret_access_key=AWS_SECRET_KEY,
 )
 
+# ---------------- DB Connection ----------------
+@app.on_event("startup")
+async def startup():
+    app.state.db = await asyncpg.create_pool(dsn=os.getenv("DATABASE_URL"))
+
+@app.on_event("shutdown")
+async def shutdown():
+    await app.state.db.close()
 
 # ------------------------------
 # HELPERS
@@ -46,15 +56,38 @@ def generate_slug(length: int = 8) -> str:
     """Generate a random slug"""
     return ''.join(random.choices(string.ascii_lowercase + string.digits, k=length))
 
+def serialize_record(record):
+    if not record:
+        return None
+    data = dict(record)
+    for k, v in data.items():
+        if isinstance(v, datetime):
+            data[k] = v.isoformat()
+    return data
 
 # ------------------------------
 # ROUTES
 # ------------------------------
-@app.post("/project")
+@app.post("/deploy")
 async def create_project(request: Request):
     body = await request.json()
     gitURL = body.get("gitURL")
     slug = body.get("slug") or generate_slug()
+
+    async with app.state.db.acquire() as conn:
+        async with conn.transaction():
+            project = await conn.fetchrow("""
+                INSERT INTO projects (slug, git_url)
+                VALUES ($1, $2)
+                ON CONFLICT (slug) DO UPDATE SET git_url = EXCLUDED.git_url
+                RETURNING id, slug, git_url, created_at
+            """, slug, gitURL)
+
+            deployment = await conn.fetchrow("""
+                INSERT INTO deployments (project_id, status)
+                VALUES ($1, 'queued')
+                RETURNING id, status, created_at
+            """, project["id"])    
 
     command = {
         "cluster": ECS_CLUSTER,
@@ -86,6 +119,11 @@ async def create_project(request: Request):
     return JSONResponse(
         {
             "status": "queued",
-            "data": {"projectSlug": slug, "url": f"http://{slug}.localhost:8000"},
+            "data": {
+                "projectSlug": slug,
+                "project": serialize_record(project),
+                "deployment": serialize_record(deployment),
+                "url": f"http://{slug}.localhost:8000",
+            },
         }
     )
