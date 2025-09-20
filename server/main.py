@@ -106,8 +106,10 @@ async def create_project(request: Request):
                 {
                     "name": "build-server-image",
                     "environment": [
-                        {"name": "GIT_REPOSITORY__URL", "value": gitURL},
+                        {"name": "GIT_REPOSITORY_URL", "value": gitURL},
                         {"name": "PROJECT_ID", "value": slug},
+                        {"name": "DEPLOYMENT_ID", "value": str(deployment["id"])},
+                        {"name": "DATABASE_URL", "value": os.getenv("DATABASE_URL")},
                     ],
                 }
             ]
